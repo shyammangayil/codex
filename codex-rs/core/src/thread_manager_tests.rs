@@ -4,6 +4,7 @@ use crate::init_state_db;
 use crate::installation_id::INSTALLATION_ID_FILENAME;
 use crate::rollout::RolloutRecorder;
 use crate::session::session::SessionSettingsUpdate;
+use crate::session::tests::build_world_state_from_turn_context;
 use crate::session::tests::make_session_and_context;
 use crate::tasks::InterruptedTurnHistoryMarker;
 use crate::tasks::interrupted_turn_history_marker;
@@ -65,6 +66,41 @@ fn contextual_user_interrupted_marker() -> ResponseItem {
 fn developer_interrupted_marker() -> ResponseItem {
     interrupted_turn_history_marker(InterruptedTurnHistoryMarker::Developer)
         .expect("developer interrupted marker should be enabled")
+}
+
+#[test]
+fn effective_originator_prefers_thread_scoped_sources_before_env_originator() {
+    for (metrics_service_name, persisted_originator, inherited_originator, expected_originator) in [
+        (
+            Some("codex_work_desktop"),
+            Some("persisted_originator"),
+            Some("inherited_originator"),
+            "codex_work_desktop",
+        ),
+        (
+            None,
+            Some("persisted_originator"),
+            Some("inherited_originator"),
+            "persisted_originator",
+        ),
+        (
+            None,
+            None,
+            Some("inherited_originator"),
+            "inherited_originator",
+        ),
+    ] {
+        assert_eq!(
+            effective_originator_value(
+                metrics_service_name,
+                Some("Codex Desktop".to_string()),
+                persisted_originator.map(str::to_string),
+                inherited_originator.map(str::to_string),
+                "codex_cli_rs".to_string(),
+            ),
+            expected_originator
+        );
+    }
 }
 
 #[test]
@@ -225,7 +261,10 @@ fn out_of_range_truncation_drops_pre_user_active_turn_prefix() {
 #[tokio::test]
 async fn ignores_session_prefix_messages_when_truncating() {
     let (session, turn_context) = make_session_and_context().await;
-    let mut items = session.build_initial_context(&turn_context).await;
+    let world_state = build_world_state_from_turn_context(&session, &turn_context).await;
+    let mut items = session
+        .build_initial_context_with_world_state(&turn_context, &world_state)
+        .await;
     items.push(user_msg("feature request"));
     items.push(assistant_msg("ack"));
     items.push(user_msg("second question"));
@@ -449,7 +488,7 @@ async fn start_thread_seeds_extension_data_for_mcp_and_lifecycle_contributors() 
             id: id.to_string(),
             location: CapabilityRootLocation::Environment {
                 environment_id: environment_id.to_string(),
-                path: format!("/plugins/{id}"),
+                path: PathUri::parse(&format!("file:///plugins/{id}")).expect("plugin root URI"),
             },
         }]);
         init
